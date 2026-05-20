@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+
+package com.danechka.grpc;
+
+message PingRequest {
+  string message = 1;
+}
+
+message PongResponse {
+  string message = 2;
+}
+
+service PingPongService {
+  rpc ping(PingRequest) returns (PongResponse);
+}
