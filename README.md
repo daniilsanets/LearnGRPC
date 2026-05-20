@@ -1,224 +1,235 @@
-🚀 Быстрый старт с gRPC на Java (Maven)
+# LearnGrpc — учебный проект по gRPC (Java)
 
-Это пошаговое руководство и шаблон проекта для реализации межсервисного взаимодействия с использованием gRPC и Protocol Buffers (Protobuf) на Java.
+Минимальный пример **Unary RPC**: клиент отправляет `PingRequest`, сервер отвечает `PongResponse`. Код генерируется из `.proto` через Maven.
 
-В отличие от классического REST (передача JSON по HTTP/1.1), gRPC использует бинарный формат данных и работает поверх HTTP/2, что обеспечивает строгую типизацию, высокую скорость и поддержку стриминга.
+## Что такое gRPC
 
-📁 Правильная структура проекта
+**gRPC** (Google Remote Procedure Call) — фреймворк для вызова удалённых процедур между сервисами:
 
-grpc-demo/
-├── src/
-│   ├── main/
-│   │   ├── java/com/example/grpc/
-│   │   │   ├── PingPongServiceImpl.java  # 4. Логика сервиса
-│   │   │   ├── GrpcServer.java           # 5. Запуск сервера
-│   │   │   └── GrpcClient.java           # 6. Клиент для проверки
-│   │   └── proto/
-│   │       └── pingpong.proto            # 2. Файл контракта
-├── pom.xml                               # 1. Зависимости и плагины
-└── README.md
+- контракт API описывается в **Protocol Buffers** (`.proto`);
+- по сети ходит **бинарный** protobuf, а не JSON;
+- транспорт — **HTTP/2** (мультиплексирование, стримы, заголовки);
+- есть **сгенерированные** клиент и сервер (stub / service base) для Java, Go, C#, Python и др.
 
+Схема этого репозитория:
 
-(Внимание: папка target создается автоматически, писать код в ней нельзя!)
+```
+┌─────────────┐     HTTP/2 + protobuf      ┌─────────────┐
+│ GrpcClient  │ ─────────────────────────► │ GrpcServer  │
+│  :9090      │   rpc ping(PingRequest)    │ PingPong    │
+│             │ ◄───────────────────────── │ ServiceImpl │
+└─────────────┘     PongResponse           └─────────────┘
+```
 
-🛠 Шаг 1: Настройка Maven (pom.xml)
+## Когда использовать gRPC
 
-Добавьте необходимые зависимости (Netty, gRPC, Protobuf) и плагин для автоматической генерации Java-кода.
+| Подходит | Слабее / не подходит |
+|----------|----------------------|
+| **Микросервисы** внутри дата-центра / VPC (низкая задержка, много вызовов) | Публичное API для браузеров без **gRPC-Web** и прокси |
+| **Строгий контракт** и генерация кода из `.proto` в разных языках | Нужен «просто curl» и читаемый JSON без инструментов |
+| **Стриминг**: сервер → клиент, клиент → сервер, двунаправленный | Кэширование на CDN как у GET REST |
+| **Высокая пропускная способность**, компактные сообщения | Редкие вызовы, где важнее простота REST, а не миллисекунды |
+| **Долгоживущие соединения** и push с сервера | Жёсткие корпоративные прокси только под HTTP/1.1 |
 
-<project xmlns="[http://maven.apache.org/POM/4.0.0](http://maven.apache.org/POM/4.0.0)" 
-         xmlns:xsi="[http://www.w3.org/2001/XMLSchema-instance](http://www.w3.org/2001/XMLSchema-instance)"
-         xsi:schemaLocation="[http://maven.apache.org/POM/4.0.0](http://maven.apache.org/POM/4.0.0) [http://maven.apache.org/xsd/maven-maven-4.0.0.xsd](http://maven.apache.org/xsd/maven-maven-4.0.0.xsd)">
-    <modelVersion>4.0.0</modelVersion>
+**Практическое правило:** внутри backend-to-backend — часто gRPC; наружу к мобильным/веб-клиентам — REST/GraphQL или gRPC-Web + gateway.
 
-    <groupId>com.example</groupId>
-    <artifactId>grpc-demo</artifactId>
-    <version>1.0-SNAPSHOT</version>
+## Четыре типа RPC (в этом проекте — только первый)
 
-    <properties>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
-        <grpc.version>1.62.2</grpc.version>
-        <protobuf.version>3.25.3</protobuf.version>
-    </properties>
+| Тип | Сигнатура в `.proto` | Когда нужен |
+|-----|----------------------|-------------|
+| **Unary** | `rpc ping(A) returns (B);` | Один запрос — один ответ (как REST POST) — **реализовано здесь** |
+| **Server streaming** | `rpc list(Req) returns (stream Item);` | Поток данных с сервера (логи, тики, каталог) |
+| **Client streaming** | `rpc upload(stream Chunk) returns (Summary);` | Загрузка файла, пакетная отправка |
+| **Bidirectional streaming** | `rpc chat(stream Msg) returns (stream Msg);` | Чат, координация, real-time |
 
-    <build>
-        <extensions>
-            <extension>
-                <groupId>kr.motd.maven</groupId>
-                <artifactId>os-maven-plugin</artifactId>
-                <version>1.7.1</version>
-            </extension>
-        </extensions>
-        <plugins>
-            <plugin>
-                <groupId>org.xolstice.maven.plugins</groupId>
-                <artifactId>protobuf-maven-plugin</artifactId>
-                <version>0.6.1</version>
-                <configuration>
-                    <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
-                    <pluginId>grpc-java</pluginId>
-                    <pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
-                </configuration>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>compile</goal>
-                            <goal>compile-custom</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
+## Структура проекта
 
-    <dependencies>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-netty-shaded</artifactId>
-            <version>${grpc.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-protobuf</artifactId>
-            <version>${grpc.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-stub</artifactId>
-            <version>${grpc.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>javax.annotation</groupId>
-            <artifactId>javax.annotation-api</artifactId>
-            <version>1.3.2</version>
-        </dependency>
-    </dependencies>
-</project>
+```
+LearnGrpc/
+├── pom.xml                          # gRPC, protobuf, protobuf-maven-plugin
+├── src/main/proto/ping_pong.proto   # контракт API
+└── src/main/java/com/danechka/grpc/
+    ├── GrpcServer.java              # порт 9090
+    ├── GrpcClient.java              # blocking stub
+    └── PingPongServiceImpl.java     # реализация rpc ping
+```
 
+После `mvn compile` Maven генерирует в `target/generated-sources/protobuf/`:
 
-📝 Шаг 2: Создание контракта (Protobuf)
+- `PingRequest`, `PongResponse` — сообщения;
+- `PingPongServiceGrpc` — stub (клиент) и `PingPongServiceImplBase` (сервер).
 
-Создайте файл src/main/proto/pingpong.proto. Этот файл является "источником правды" для сервера и клиента.
+## Требования
 
-syntax = "proto3";
+- **JDK 21** (см. `pom.xml`)
+- **Maven 3.6+**
+- Свободный порт **9090** на localhost
 
-option java_multiple_files = true;
-package com.example.grpc;
+## Быстрый старт
 
-message PingRequest {
-  string message = 1; // 1 — бинарный тег поля
-}
+### Вариант A — IntelliJ IDEA (проще всего)
 
-message PongResponse {
-  string message = 2; // 2 — бинарный тег поля
-}
+1. Откройте проект `LearnGrpc`.
+2. `mvn compile` или **Build → Build Project** (нужна генерация классов из `.proto`).
+3. Запустите **Run** на `GrpcServer` — дождитесь `Server started, listening on 9090`.
+4. Запустите **Run** на `GrpcClient`.
 
+### Вариант B — командная строка
+
+Из каталога `LearnGrpc`:
+
+```bash
+mvn compile
+mvn -q dependency:build-classpath -Dmdep.outputFile=cp.txt
+set /p CP=<cp.txt
+java -cp "target/classes;target/generated-sources/protobuf/grpc-java;target/generated-sources/protobuf/java;%CP%" com.danechka.grpc.GrpcServer
+```
+
+Во втором терминале (сервер уже запущен):
+
+```bash
+java -cp "target/classes;target/generated-sources/protobuf/grpc-java;target/generated-sources/protobuf/java;%CP%" com.danechka.grpc.GrpcClient
+```
+
+На Linux/macOS замените `;` на `:` и `set /p CP=<cp.txt` на `export CP=$(cat cp.txt)`.
+
+Ожидаемый вывод:
+
+- сервер: `Server started, listening on 9090` и лог входящего сообщения;
+- клиент: отправка `hello from client :)` и ответ с `PONG!!!`.
+
+## Как устроен контракт (`.proto`)
+
+Файл `src/main/proto/ping_pong.proto`:
+
+- `syntax = "proto3"` — текущая версия protobuf;
+- `package com.danechka.grpc` — namespace для Java;
+- `java_multiple_files = true` — отдельный `.java` на каждое message/service;
+- поля `message` нумеруются **1, 2, 3…** — номера нельзя менять задним числом без миграции (см. подводные камни).
+
+Сервис:
+
+```protobuf
 service PingPongService {
   rpc ping(PingRequest) returns (PongResponse);
 }
+```
 
+## Цепочка вызова (что повторить в голове)
 
-⚙️ Шаг 3: Генерация кода
+1. **Клиент:** `ManagedChannel` → `PingPongServiceBlockingStub` → `stub.ping(request)`.
+2. **Сеть:** HTTP/2, путь вида `/com.danechka.grpc.PingPongService/ping`, тело — protobuf.
+3. **Сервер:** `ServerBuilder` + `addService(new PingPongServiceImpl())`.
+4. **Обработчик:** `onNext(response)` → `onCompleted()` (обязательно завершить unary-вызов).
 
-Выполните команду в терминале (или через панель Maven в IDE):
+## Подводные камни
 
-mvn clean compile
+### 1. HTTP/2 и инфраструктура
 
+gRPC **требует HTTP/2**. Старые балансировщики, некоторые nginx без `grpc_pass`, корпоративные proxy могут ломать или буферизовать стримы. Для production обычно: L7 LB с поддержкой gRPC, или **gRPC-Gateway** / Envoy.
 
-Плагин создаст Java-классы на основе вашего .proto файла в директории target/generated-sources/protobuf/.
+### 2. TLS и `usePlaintext()`
 
-🖥 Шаг 4: Реализация Сервера
+В учебном клиенте:
 
-Создайте класс PingPongServiceImpl.java в src/main/java/com/example/grpc/.
+```java
+.usePlaintext()  // без шифрования — только localhost / dev
+```
 
-package com.example.grpc;
+В production: TLS (`useTransportSecurity()`), сертификаты, часто **mTLS** между сервисами. Без TLS данные и метаданные идут открытым текстом.
 
-import io.grpc.stub.StreamObserver;
+### 3. Обратная совместимость protobuf
 
-public class PingPongServiceImpl extends PingPongServiceGrpc.PingPongServiceImplBase {
+- **Не переиспользуйте** номера полей под другой тип.
+- **Не удаляйте** поля — помечайте `reserved` или оставляйте с `deprecated`.
+- Новые поля добавляйте с **новыми** номерами; старые клиенты их игнорируют (по умолчанию).
+- Изменение `string` → `int32` с тем же номером — поломка на уровне wire format.
 
-    @Override
-    public void ping(PingRequest request, StreamObserver<PongResponse> responseObserver) {
-        String clientMessage = request.getMessage();
-        System.out.println("[СЕРВЕР] Получено: " + clientMessage);
+### 4. Deadlines и отмена
 
-        PongResponse response = PongResponse.newBuilder()
-                .setMessage("ПОНГ! Вы прислали: " + clientMessage)
-                .build();
+Unary без deadline может висеть вечно. В production:
 
-        responseObserver.onNext(response);
-        responseObserver.onCompleted(); // Сигнал завершения
-    }
-}
+```java
+stub.withDeadlineAfter(5, TimeUnit.SECONDS).ping(request);
+```
 
+На сервере проверяйте `Context.current().isCancelled()`.
 
-Создайте точку входа для сервера — GrpcServer.java:
+### 5. Blocking vs async stub
 
-package com.example.grpc;
+| Stub | Поведение |
+|------|-----------|
+| `BlockingStub` | Поток блокируется — просто для обучения |
+| `Stub` (async) | Callback / `ListenableFuture` |
+| `FutureStub` | `ListenableFuture` для unary |
 
-import io.grpc.Server;
-import io.grpc.ServerBuilder;
-import java.io.IOException;
+Для server streaming blocking stub **не подходит** — нужен async.
 
-public class GrpcServer {
-    public static void main(String[] args) throws IOException, InterruptedException {
-        Server server = ServerBuilder.forPort(9090)
-                .addService(new PingPongServiceImpl())
-                .build();
+### 6. Ошибки: Status, не исключения HTTP
 
-        server.start();
-        System.out.println("[СЕРВЕР] Запущен на порту 9090...");
-        server.awaitTermination();
-    }
-}
+Ошибки — `io.grpc.Status` (`NOT_FOUND`, `INVALID_ARGUMENT`, `DEADLINE_EXCEEDED`). На сервере:
 
+```java
+responseObserver.onError(Status.INVALID_ARGUMENT.withDescription("...").asException());
+```
 
-📱 Шаг 5: Реализация Клиента
+Клиент ловит `StatusRuntimeException`.
 
-Создайте GrpcClient.java для проверки работы:
+### 7. Размер сообщений
 
-package com.example.grpc;
+Дефолтный лимит ~4 MB. Большие payload — chunking через **client streaming** или хранение в S3 + ссылка в protobuf.
 
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+### 8. Версии зависимостей
 
-public class GrpcClient {
-    public static void main(String[] args) {
-        ManagedChannel channel = ManagedChannelBuilder.forAddress("localhost", 9090)
-                .usePlaintext() // Выключаем TLS для локального теста
-                .build();
+`grpc`, `protoc`, `protoc-gen-grpc-java` должны быть **согласованы** (в `pom.xml` одна версия `grpc.version`). Иначе — странные ошибки компиляции или runtime.
 
-        PingPongServiceGrpc.PingPongServiceBlockingStub stub = PingPongServiceGrpc.newBlockingStub(channel);
+### 9. `javax.annotation` / Java 9+
 
-        PingRequest request = PingRequest.newBuilder()
-                .setMessage("ПИНГ")
-                .build();
+`@Generated` и др. требуют `javax.annotation-api` (уже в `pom.xml`) — без этого сборка на новых JDK падает.
 
-        PongResponse response = stub.ping(request);
-        System.out.println("[КЛИЕНТ] Ответ от сервера: " + response.getMessage());
+### 10. Graceful shutdown
 
-        channel.shutdown();
-    }
-}
+Учебный код делает `channel.shutdown()`, но не `awaitTermination`. В production:
 
+```java
+channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+server.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+```
 
-🚀 Шаг 6: Запуск приложения
+Иначе — обрыв активных RPC при деплое.
 
-Запустите метод main в классе GrpcServer.
+### 11. Идемпотентность и ретраи
 
-Убедитесь, что в консоли появилось сообщение об успешном старте.
+Повтор unary-запроса может выполнить операцию дважды. Для неидемпотентных методов настраивайте retry policy осторожно (gRPC Java retry — отдельная тема).
 
-Запустите метод main в классе GrpcClient.
+### 12. Observability
 
-Наслаждайтесь мгновенным бинарным обменом данными!
+REST привычен к access-log. В gRPC нужны **interceptors**, OpenTelemetry, распространение `trace-id` в **metadata** (аналог HTTP-заголовков).
 
-🚑 Частые проблемы (Troubleshooting)
+## gRPC vs REST (кратко)
 
-IDE не видит сгенерированные классы (красные подчеркивания):
-В IntelliJ IDEA: Правый клик по папке target/generated-sources/protobuf/ -> Mark Directory as -> Generated Sources Root.
+| | gRPC | REST (JSON) |
+|---|------|-------------|
+| Формат | Protobuf (бинарный) | JSON (текст) |
+| Контракт | `.proto` + codegen | OpenAPI / ad hoc |
+| Транспорт | HTTP/2 | чаще HTTP/1.1 |
+| Стриминг | нативно | SSE/WebSocket отдельно |
+| Браузер | gRPC-Web + proxy | нативно |
 
-Я случайно написал код в папке target:
-Всё, что находится в папке target, удаляется при сборке проекта (mvn clean). Всегда пишите код только в src/main/java/.
+## Куда двигаться после этого репо
 
-Ошибка компиляции Protobuf:
-Проверьте, что путь к файлу строго src/main/proto/. Плагин ищет .proto файлы именно там.
+1. Добавить в `.proto` **server streaming** (например, поток чисел).
+2. Заменить `BlockingStub` на **async** + `StreamObserver`.
+3. Включить **TLS** (self-signed для localhost).
+4. **Metadata**: передать `authorization` / `request-id` в заголовках.
+5. **Deadline** и обработка `DEADLINE_EXCEEDED`.
+6. **Server interceptor** для логирования и метрик.
+
+## Полезные ссылки
+
+- [Официальная документация gRPC](https://grpc.io/docs/)
+- [gRPC Java quick start](https://grpc.io/docs/languages/java/quickstart/)
+- [Protocol Buffers](https://protobuf.dev/overview/)
+- [gRPC concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
+- [Style guide для .proto](https://protobuf.dev/programming-guides/style/)
+
